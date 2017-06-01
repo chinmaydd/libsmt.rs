@@ -50,7 +50,8 @@ fn main() {
     let _ = solver.assert(core::OpCodes::Cmp, &[rt, rt_const]);
 
     // Print the required keys.
-    if let Ok(result) = solver.solve(&mut z3) {
+    // Adding a parameter for timeout in ms
+    if let Ok(result) = solver.solve(&mut z3, Some(5000)) {
         println!("LK: {:x}; RK: {:x}", result[&lk], result[&rk]);
     } else {
         println!("No Solution.");

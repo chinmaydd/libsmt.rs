@@ -8,6 +8,8 @@ use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::fmt;
 use regex::Regex;
+use std::time::Duration;
+use std::sync::mpsc::{self, RecvTimeoutError};
 
 use petgraph::graph::{Graph, NodeIndex};
 use petgraph::EdgeDirection;
@@ -43,31 +45,36 @@ pub trait SMTProc {
         Ok(())
     }
 
-    fn read(&mut self) -> String {
-        // XXX: This read may block indefinitely if there is nothing on the pipe to be
-        // read. To prevent this we need a timeout mechanism after which we should
-        // return with
-        // an error, such as: ErrTimeout.
-        // Another important point to note here is that, if the data available to read
-        // is exactly
-        // 2048 bytes, then this reading mechanism fails and will end up waiting to
-        // read more data
-        // (when none is available) indefinitely.
+    fn read(&mut self, timeout: Option<u64>) -> Result<String, SMTError> {
+        // Important point to note here is that, if the data available to read
+        // is exactly 2048 bytes, then this reading mechanism fails and will end up waiting to
+        // read more data (when none is available) indefinitely.
         let mut bytes_read = [0; 2048];
         let mut s = String::new();
         let solver = self.pipe();
+
+        let (send, recv) = mpsc::channel::<bool>();
+
         if let Some(ref mut stdout) = solver.stdout.as_mut() {
-            loop {
-                let n = stdout.read(&mut bytes_read).unwrap();
-                s = format!("{}{}",
-                            s,
-                            String::from_utf8(bytes_read[0..n].to_vec()).unwrap());
-                if n < 2048 {
-                    break;
-                }
-            }
+            let n = stdout.read(&mut bytes_read).unwrap();
+            s = format!("{}{}",
+                        s,
+                        String::from_utf8(bytes_read[0..n].to_vec()).unwrap());
+            // Sends a response on the channel, indicating that the output has been generated.
+             send.send(true);
         }
-        s
+
+        if timeout.is_some() {
+            let result = recv.recv_timeout(Duration::from_millis(timeout.unwrap()));
+            if result.is_ok() {
+                Ok(s)
+            } else {
+                Err(SMTError::Timeout)
+            }
+        } else {
+            let _ = recv.recv();
+            Ok(s)
+        }
     }
 }
 
@@ -195,21 +202,35 @@ impl<L: Logic> SMTBackend for SMTLib2<L> {
         assertion
     }
 
-    fn check_sat<S: SMTProc>(&mut self, smt_proc: &mut S) -> bool {
+    fn check_sat<S: SMTProc>(&mut self, smt_proc: &mut S, timeout: Option<u64>) -> SMTResult<bool> {
         smt_proc.write(self.generate_asserts());
         smt_proc.write("(check-sat)\n".to_owned());
-        if &smt_proc.read() == "sat\n" {
-            true
+
+        let read_result = smt_proc.read(timeout);
+
+        if read_result.is_ok() {
+            let read_string = read_result.unwrap();
+
+            if read_string == "sat\n" {
+                Ok(true)
+            } else {
+                Ok(false)
+            }
         } else {
-            false
+            Err(SMTError::Timeout)
         }
     }
 
     // TODO: Return type information along with the value.
-    fn solve<S: SMTProc>(&mut self, smt_proc: &mut S) -> SMTResult<HashMap<Self::Idx, u64>> {
+    fn solve<S: SMTProc>(&mut self, smt_proc: &mut S, timeout: Option<u64>) -> SMTResult<HashMap<Self::Idx, u64>> {
         let mut result = HashMap::new();
-        if !self.check_sat(smt_proc) {
-            return Err(SMTError::Unsat);
+
+        let sat_result = self.check_sat(smt_proc, timeout);
+
+        if !sat_result.is_ok() {
+            return Err(SMTError::Timeout)
+        } else if !sat_result.unwrap() {
+            return Err(SMTError::Unsat)
         }
 
         smt_proc.write("(get-model)\n".to_owned());
@@ -217,33 +238,38 @@ impl<L: Logic> SMTBackend for SMTLib2<L> {
         // the SMT solver. Need to look into the reason for this. This might stop
         // working in the
         // future.
-        let _ = smt_proc.read();
-        let read_result = smt_proc.read();
+        let _ = smt_proc.read(timeout);
+        let read_result = smt_proc.read(timeout);
 
-        // Example of result from the solver:
-        // (model
-        //  (define-fun y () Int
-        //    9)
-        //  (define-fun x () Int
-        //    10)
-        // )
-        let re = Regex::new(r"\s+\(define-fun (?P<var>[0-9a-zA-Z_]+) \(\) [(]?[ _a-zA-Z0-9]+[)]?\n\s+(?P<val>([0-9]+|#x[0-9a-f]+|#b[01]+))")
-                     .unwrap();
-        for caps in re.captures_iter(&read_result) {
-            // Here the caps.name("val") can be a hex value, or a binary value or a decimal
-            // value. We need to parse the output to a u64 accordingly.
-            let val_str = caps.name("val").unwrap();
-            let val = if val_str.len() > 2 && &val_str[0..2] == "#x" {
-                          u64::from_str_radix(&val_str[2..], 16)
-                      } else if val_str.len() > 2 && &val_str[0..2] == "#b" {
-                          u64::from_str_radix(&val_str[2..], 2)
-                      } else {
-                          val_str.parse::<u64>()
-                      }
-                      .unwrap();
-            let vname = caps.name("var").unwrap();
-            result.insert(self.var_map[vname].0.clone(), val);
+        if read_result.is_ok() {
+            let read_string = read_result.unwrap();
+            // Example of result from the solver:
+            // (model
+            //  (define-fun y () Int
+            //    9)
+            //  (define-fun x () Int
+            //    10)
+            // )
+            let re = Regex::new(r"\s+\(define-fun (?P<var>[0-9a-zA-Z_]+) \(\) [(]?[ _a-zA-Z0-9]+[)]?\n\s+(?P<val>([0-9]+|#x[0-9a-f]+|#b[01]+))")
+                         .unwrap();
+            for caps in re.captures_iter(&read_string) {
+                // Here the caps.name("val") can be a hex value, or a binary value or a decimal
+                // value. We need to parse the output to a u64 accordingly.
+                let val_str = caps.name("val").unwrap();
+                let val = if val_str.len() > 2 && &val_str[0..2] == "#x" {
+                              u64::from_str_radix(&val_str[2..], 16)
+                          } else if val_str.len() > 2 && &val_str[0..2] == "#b" {
+                              u64::from_str_radix(&val_str[2..], 2)
+                          } else {
+                              val_str.parse::<u64>()
+                          }
+                          .unwrap();
+                let vname = caps.name("var").unwrap();
+                result.insert(self.var_map[vname].0.clone(), val);
+            }
+            Ok(result)
+        } else {
+            Err(SMTError::Timeout)
         }
-        Ok(result)
     }
 }

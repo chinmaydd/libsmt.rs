@@ -10,6 +10,7 @@ use backends::smtlib2::SMTProc;
 
 #[derive(Clone, Debug)]
 pub enum SMTError {
+    Timeout,
     Undefined,
     Unsat,
     AssertionError(String),
@@ -37,7 +38,8 @@ pub type SMTResult<T> = Result<T, SMTError>;
 ///  - set_option
 ///  - get_info
 ///  - set_info
-///  - exit
+// Functions which do not really make sense for the solver currently:
+// 1. exit - The solver instance 
 pub trait SMTBackend {
     type Idx: Debug + Clone;
     type Logic: Logic;
@@ -50,8 +52,11 @@ pub trait SMTBackend {
               P: Into<<<Self as SMTBackend>::Logic as Logic>::Sorts>;
 
     fn assert<T: Into<<<Self as SMTBackend>::Logic as Logic>::Fns>>(&mut self, T, &[Self::Idx]) -> Self::Idx;
-    fn check_sat<S: SMTProc>(&mut self, &mut S) -> bool;
-    fn solve<S: SMTProc>(&mut self, &mut S) -> SMTResult<HashMap<Self::Idx, u64>>;
+    // Adding a way to add a timeout to check_sat and solve methods.
+    // If no value is provided it will default to indefinite wait.
+    fn check_sat<S: SMTProc>(&mut self, &mut S, Option<u64>) -> SMTResult<bool>;
+    fn solve<S: SMTProc>(&mut self, &mut S, Option<u64>) -> SMTResult<HashMap<Self::Idx, u64>>;
+
 }
 
 pub trait Logic: fmt::Display + Clone + Copy {
