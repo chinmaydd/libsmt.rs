@@ -204,10 +204,7 @@ impl<L: Logic> SMTLib2<L> {
 
     pub fn solve_with_timeout<S: SMTProc>(&mut self, smt_proc: &mut S, timeout: u64) -> SMTResult<HashMap<NodeIndex, u64>> {
         let sat_result = self.check_sat(smt_proc);
-
-        if !sat_result.is_ok() {
-            return Err(SMTError::Undefined)
-        } else if !sat_result.unwrap() {
+        if !sat_result {
             return Err(SMTError::Unsat)
         }
 
@@ -262,22 +259,25 @@ impl<L: Logic> SMTBackend for SMTLib2<L> {
     }
 
 
-    fn check_sat<S: SMTProc>(&mut self, smt_proc: &mut S) -> SMTResult<bool> {
+    fn check_sat<S: SMTProc>(&mut self, smt_proc: &mut S) -> bool {
         let _ = smt_proc.write(self.generate_asserts());
         let _ = smt_proc.write("(check-sat)\n".to_owned());
 
         let read_result = smt_proc.read(None);
 
+        // TODO: Need to implement an else case where the read() might fail.
+        // This could be implemented in the next version of the API since 
+        // the check_sat function is expected to return a bool instead of an
+        // Result<>.
         if read_result.is_ok() {
             let read_string = read_result.unwrap();
-
             if read_string == "sat\n" {
-                Ok(true)
+                true
             } else {
-                Ok(false)
+                false
             }
         } else {
-            Err(SMTError::Undefined)
+            false
         }
     }
 
@@ -286,10 +286,7 @@ impl<L: Logic> SMTBackend for SMTLib2<L> {
         let mut result = HashMap::new();
 
         let sat_result = self.check_sat(smt_proc);
-
-        if !sat_result.is_ok() {
-            return Err(SMTError::Undefined)
-        } else if !sat_result.unwrap() {
+        if !sat_result {
             return Err(SMTError::Unsat)
         }
 

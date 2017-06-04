@@ -49,7 +49,7 @@ pub trait SMTBackend {
               P: Into<<<Self as SMTBackend>::Logic as Logic>::Sorts>;
 
     fn assert<T: Into<<<Self as SMTBackend>::Logic as Logic>::Fns>>(&mut self, T, &[Self::Idx]) -> Self::Idx;
-    fn check_sat<S: SMTProc>(&mut self, &mut S) -> SMTResult<bool>;
+    fn check_sat<S: SMTProc>(&mut self, &mut S) -> bool;
     fn solve<S: SMTProc>(&mut self, &mut S) -> SMTResult<HashMap<Self::Idx, u64>>;
 }
 
