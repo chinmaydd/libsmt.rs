@@ -1,7 +1,6 @@
 //! Defines basic operation defined under Core theory in SMTLIB2.
 
 use std::fmt;
-use std::fmt::Debug;
 
 use backends::backend::SMTNode;
 

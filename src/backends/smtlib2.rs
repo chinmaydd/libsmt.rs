@@ -3,20 +3,18 @@
 //! This backend outputs the constraints in standard smt-lib2 format. Hence,
 //! any solver that supports this format maybe used to solve for constraints.
 
-use std::process::{Child, Command, Stdio};
-use std::collections::{HashMap, VecDeque};
+use std::process::Child;
+use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::fmt;
 use regex::Regex;
 use std::time::Duration;
-use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::mpsc;
 
 use petgraph::graph::{Graph, NodeIndex};
 use petgraph::EdgeDirection;
 use petgraph::visit::EdgeRef;
 
 use backends::backend::{Logic, SMTBackend, SMTError, SMTNode, SMTResult};
-use theories::{bitvec, core, integer};
 
 /// Trait that needs to be implemented in order to support a new solver. `SMTProc` is short for
 /// "SMT Process".
@@ -61,7 +59,7 @@ pub trait SMTProc {
                         s,
                         String::from_utf8(bytes_read[0..n].to_vec()).unwrap());
             // Sends a response on the channel, indicating that the output has been generated.
-             send.send(true);
+             let _ = send.send(true);
         }
 
         if timeout.is_some() {
@@ -94,7 +92,7 @@ pub struct SMTLib2<T: Logic> {
 
 impl<L: Logic> SMTLib2<L> {
     pub fn new(logic: Option<L>) -> SMTLib2<L> {
-        let mut solver = SMTLib2 {
+        let solver = SMTLib2 {
             logic: logic,
             gr: Graph::new(),
             var_index: 0,
@@ -164,6 +162,67 @@ impl<L: Logic> SMTLib2<L> {
         }
         result
     }
+
+    pub fn check_sat_with_timeout<S: SMTProc>(&mut self, smt_proc: &mut S, timeout: u64) -> SMTResult<bool> {
+        let _ = smt_proc.write(self.generate_asserts());
+        let _ = smt_proc.write("(check-sat)\n".to_owned());
+
+        let read_result = smt_proc.read(Some(timeout));
+
+        if read_result.is_ok() {
+            let read_string = read_result.unwrap();
+
+            if read_string == "sat\n" {
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        } else {
+            Err(SMTError::Timeout)
+        }
+    }
+
+    fn parse_solver_output(&mut self, output: String) -> HashMap<NodeIndex, u64> {
+        let mut result: HashMap<NodeIndex, u64> = HashMap::new();
+        let re = Regex::new(r"\s+\(define-fun (?P<var>[0-9a-zA-Z_]+) \(\) [(]?[ _a-zA-Z0-9]+[)]?\n\s+(?P<val>([0-9]+|#x[0-9a-f]+|#b[01]+))")
+                     .unwrap();
+        for caps in re.captures_iter(&output) {
+            let val_str = caps.name("val").unwrap();
+            let val = if val_str.len() > 2 && &val_str[0..2] == "#x" {
+                          u64::from_str_radix(&val_str[2..], 16)
+                      } else if val_str.len() > 2 && &val_str[0..2] == "#b" {
+                          u64::from_str_radix(&val_str[2..], 2)
+                      } else {
+                          val_str.parse::<u64>()
+                      }
+                      .unwrap();
+            let vname = caps.name("var").unwrap();
+            result.insert(self.var_map[vname].0.clone(), val);
+        }
+        return result;
+    }
+
+    pub fn solve_with_timeout<S: SMTProc>(&mut self, smt_proc: &mut S, timeout: u64) -> SMTResult<HashMap<NodeIndex, u64>> {
+        let sat_result = self.check_sat(smt_proc);
+
+        if !sat_result.is_ok() {
+            return Err(SMTError::Undefined)
+        } else if !sat_result.unwrap() {
+            return Err(SMTError::Unsat)
+        }
+
+        let _ = smt_proc.write("(get-model)\n".to_owned());
+        
+        let _ = smt_proc.read(Some(timeout));
+        let read_result = smt_proc.read(Some(timeout));
+
+        if read_result.is_ok() {
+            let read_string = read_result.unwrap();
+            Ok(self.parse_solver_output(read_string))
+        } else {
+            Err(SMTError::Timeout)
+        }
+    }
 }
 
 impl<L: Logic> SMTBackend for SMTLib2<L> {
@@ -190,7 +249,7 @@ impl<L: Logic> SMTBackend for SMTLib2<L> {
             return;
         }
         let logic = self.logic.unwrap().clone();
-        smt_proc.write(format!("(set-logic {})\n", logic));
+        let _ = smt_proc.write(format!("(set-logic {})\n", logic));
     }
 
     fn assert<T: Into<L::Fns>>(&mut self, assert: T, ops: &[Self::Idx]) -> Self::Idx {
@@ -202,11 +261,12 @@ impl<L: Logic> SMTBackend for SMTLib2<L> {
         assertion
     }
 
-    fn check_sat<S: SMTProc>(&mut self, smt_proc: &mut S, timeout: Option<u64>) -> SMTResult<bool> {
-        smt_proc.write(self.generate_asserts());
-        smt_proc.write("(check-sat)\n".to_owned());
 
-        let read_result = smt_proc.read(timeout);
+    fn check_sat<S: SMTProc>(&mut self, smt_proc: &mut S) -> SMTResult<bool> {
+        let _ = smt_proc.write(self.generate_asserts());
+        let _ = smt_proc.write("(check-sat)\n".to_owned());
+
+        let read_result = smt_proc.read(None);
 
         if read_result.is_ok() {
             let read_string = read_result.unwrap();
@@ -217,29 +277,29 @@ impl<L: Logic> SMTBackend for SMTLib2<L> {
                 Ok(false)
             }
         } else {
-            Err(SMTError::Timeout)
+            Err(SMTError::Undefined)
         }
     }
 
     // TODO: Return type information along with the value.
-    fn solve<S: SMTProc>(&mut self, smt_proc: &mut S, timeout: Option<u64>) -> SMTResult<HashMap<Self::Idx, u64>> {
+    fn solve<S: SMTProc>(&mut self, smt_proc: &mut S) -> SMTResult<HashMap<Self::Idx, u64>> {
         let mut result = HashMap::new();
 
-        let sat_result = self.check_sat(smt_proc, timeout);
+        let sat_result = self.check_sat(smt_proc);
 
         if !sat_result.is_ok() {
-            return Err(SMTError::Timeout)
+            return Err(SMTError::Undefined)
         } else if !sat_result.unwrap() {
             return Err(SMTError::Unsat)
         }
 
-        smt_proc.write("(get-model)\n".to_owned());
+        let _ = smt_proc.write("(get-model)\n".to_owned());
         // XXX: For some reason we need two reads here in order to get the result from
         // the SMT solver. Need to look into the reason for this. This might stop
         // working in the
         // future.
-        let _ = smt_proc.read(timeout);
-        let read_result = smt_proc.read(timeout);
+        let _ = smt_proc.read(None);
+        let read_result = smt_proc.read(None);
 
         if read_result.is_ok() {
             let read_string = read_result.unwrap();
@@ -269,7 +329,7 @@ impl<L: Logic> SMTBackend for SMTLib2<L> {
             }
             Ok(result)
         } else {
-            Err(SMTError::Timeout)
+            Err(SMTError::Undefined)
         }
     }
 }

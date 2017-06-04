@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::fmt;
 
-use theories::core;
 use backends::smtlib2::SMTProc;
 
 #[derive(Clone, Debug)]
@@ -38,8 +37,6 @@ pub type SMTResult<T> = Result<T, SMTError>;
 ///  - set_option
 ///  - get_info
 ///  - set_info
-// Functions which do not really make sense for the solver currently:
-// 1. exit - The solver instance 
 pub trait SMTBackend {
     type Idx: Debug + Clone;
     type Logic: Logic;
@@ -52,11 +49,8 @@ pub trait SMTBackend {
               P: Into<<<Self as SMTBackend>::Logic as Logic>::Sorts>;
 
     fn assert<T: Into<<<Self as SMTBackend>::Logic as Logic>::Fns>>(&mut self, T, &[Self::Idx]) -> Self::Idx;
-    // Adding a way to add a timeout to check_sat and solve methods.
-    // If no value is provided it will default to indefinite wait.
-    fn check_sat<S: SMTProc>(&mut self, &mut S, Option<u64>) -> SMTResult<bool>;
-    fn solve<S: SMTProc>(&mut self, &mut S, Option<u64>) -> SMTResult<HashMap<Self::Idx, u64>>;
-
+    fn check_sat<S: SMTProc>(&mut self, &mut S) -> SMTResult<bool>;
+    fn solve<S: SMTProc>(&mut self, &mut S) -> SMTResult<HashMap<Self::Idx, u64>>;
 }
 
 pub trait Logic: fmt::Display + Clone + Copy {

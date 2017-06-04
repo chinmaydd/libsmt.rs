@@ -2,8 +2,6 @@
 
 use std::fmt;
 
-#[macro_use]
-use theories::utils;
 use backends::backend::SMTNode;
 
 #[derive(Clone, Debug)]

@@ -1,4 +1,3 @@
-use std::fmt::{Display, Debug};
 use std::fmt;
 
 use theories::{array_ex, bitvec, core};

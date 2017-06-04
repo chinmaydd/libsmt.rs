@@ -1,7 +1,5 @@
 //! Macro helpers for defining theories
 
-use backends::backend::SMTNode;
-
 #[macro_export]
 macro_rules! impl_smt_node {
     ($fns: ty, define vars [$($variant: pat),*], define consts [$($c: pat),*]) => {

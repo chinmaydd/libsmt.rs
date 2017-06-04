@@ -51,7 +51,7 @@ fn main() {
 
     // Print the required keys.
     // Adding a parameter for timeout in ms
-    if let Ok(result) = solver.solve(&mut z3, Some(5000)) {
+    if let Ok(result) = solver.solve_with_timeout(&mut z3, 1000) {
         println!("LK: {:x}; RK: {:x}", result[&lk], result[&rk]);
     } else {
         println!("No Solution.");

@@ -2,8 +2,6 @@
 
 use std::fmt;
 
-#[macro_use]
-use theories::utils;
 use backends::backend::SMTNode;
 
 #[derive(Clone, Debug)]
@@ -62,6 +60,6 @@ impl fmt::Display for Sorts {
             Sorts::Real => "Real",
             Sorts::Int => "Int"
         };
-        write!(f, "{}", "s")
+        write!(f, "{}", s)
     }
 }

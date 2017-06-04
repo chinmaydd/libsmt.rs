@@ -1,5 +1,6 @@
 //! Crate that allows rust programs to interact with SMT (Satisfiability Modulo Theory) solvers.
 
+#![allow(non_camel_case_types)]
 extern crate petgraph;
 extern crate regex;
 
